@@ -14,13 +14,13 @@
 <meta name="theme-color" content="#10161f">
 <style>
 :root{
-  --bg:#10161f;          /* deep slate */
+  --bg:#10161f;
   --panel:#171f2b;
   --panel-2:#1d2735;
   --line:#2b3648;
   --ink:#e8edf4;
   --ink-dim:#8fa3bf;
-  --accent:#f5c518;      /* SMF-jacket yellow */
+  --accent:#f5c518;
   --accent-ink:#10161f;
   --good:#3ddc84;
   --bad:#ff5d5d;
@@ -41,7 +41,6 @@ header h1{font-size:17px;font-weight:700;letter-spacing:.04em}
 header h1 b{color:var(--accent);font-weight:700}
 header .count{margin-left:auto;font-family:var(--mono);font-size:13px;color:var(--ink-dim)}
 
-/* ---- scanner viewport ---- */
 .viewport{
   position:relative;margin:0 16px;border-radius:14px;overflow:hidden;
   background:#000;aspect-ratio:4/3;border:1px solid var(--line);
@@ -55,7 +54,7 @@ video{width:100%;height:100%;object-fit:cover;display:block}
 .reticle{position:absolute;inset:0;pointer-events:none;display:none}
 .viewport.live .reticle{display:block}
 .reticle::before{
-  content:"";position:absolute;left:10%;right:10%;top:32%;bottom:32%;
+  content:"";position:absolute;left:8%;right:8%;top:30%;bottom:30%;
   border-radius:10px;
   background:
     linear-gradient(var(--accent),var(--accent)) top left/26px 3px,
@@ -77,8 +76,12 @@ video{width:100%;height:100%;object-fit:cover;display:block}
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;
 }
 .last-read.show{display:block}
+.status{
+  padding:6px 18px 0;font-family:var(--mono);font-size:11px;color:var(--ink-dim);
+  display:none;
+}
+.status.show{display:block}
 
-/* ---- controls ---- */
 .controls{display:flex;gap:10px;padding:12px 16px}
 button{
   font-family:var(--sans);font-size:15px;font-weight:600;border:none;border-radius:10px;
@@ -91,7 +94,10 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 #btnTorch[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
 .hidden{display:none !important}
 
-/* ---- log ---- */
+.zoomrow{display:none;align-items:center;gap:10px;padding:0 18px 6px;color:var(--ink-dim);font-size:13px}
+.zoomrow.show{display:flex}
+.zoomrow input[type=range]{flex:1;accent-color:var(--accent)}
+
 .log{flex:1;padding:4px 16px 16px}
 .log-head{display:flex;align-items:center;gap:8px;margin:6px 0 8px}
 .log-head h2{font-size:12px;font-weight:600;letter-spacing:.12em;color:var(--ink-dim);text-transform:uppercase}
@@ -132,25 +138,33 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   </header>
 
   <div class="viewport idle" id="viewport">
-    <video id="video" playsinline muted></video>
+    <video id="video" playsinline muted autoplay></video>
     <div class="idle-msg" id="idleMsg">
       <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#8fa3bf" stroke-width="1.6" aria-hidden="true">
         <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
         <path d="M7 8v8M10 8v8M13 8v5M16 8v8" stroke="#f5c518"/>
       </svg>
-      <span>Point at a module label barcode —<br>Code 128, QR, Data Matrix supported.</span>
+      <span>Live scan or use Photo for tricky labels.<br>Code 128, Code 39, QR, Data Matrix.</span>
     </div>
     <div class="reticle"></div>
     <div class="flash" id="flash"></div>
     <div class="last-read" id="lastRead"></div>
   </div>
 
+  <div class="status" id="status"></div>
   <div class="err" id="err"></div>
+
+  <div class="zoomrow" id="zoomRow">
+    <span>Zoom</span>
+    <input type="range" id="zoom" min="1" max="3" step="0.1" value="1" aria-label="Camera zoom">
+  </div>
 
   <div class="controls">
     <button id="btnStart">Start camera</button>
+    <button id="btnPhoto">Photo</button>
     <button id="btnTorch" class="hidden" aria-pressed="false">Torch</button>
   </div>
+  <input type="file" id="fileInput" accept="image/*" capture="environment" class="hidden">
 
   <section class="log">
     <div class="log-head">
@@ -172,7 +186,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 (() => {
 "use strict";
 
-/* ---------- storage (localStorage with in-memory fallback) ---------- */
+/* ---------- storage ---------- */
 const KEY = "xcvr-scans-v1";
 let memStore = [];
 const store = {
@@ -184,8 +198,10 @@ let scans = store.load();
 /* ---------- elements ---------- */
 const $ = id => document.getElementById(id);
 const video=$("video"), viewport=$("viewport"), flash=$("flash"), lastRead=$("lastRead"),
-      btnStart=$("btnStart"), btnTorch=$("btnTorch"), entriesEl=$("entries"),
-      emptyEl=$("empty"), countEl=$("count"), toastEl=$("toast"), errEl=$("err");
+      btnStart=$("btnStart"), btnTorch=$("btnTorch"), btnPhoto=$("btnPhoto"),
+      fileInput=$("fileInput"), entriesEl=$("entries"), emptyEl=$("empty"),
+      countEl=$("count"), toastEl=$("toast"), errEl=$("err"),
+      statusEl=$("status"), zoomRow=$("zoomRow"), zoomSlider=$("zoom");
 
 /* ---------- helpers ---------- */
 let toastTimer;
@@ -199,6 +215,7 @@ function clearErr(){ errEl.classList.remove("show"); }
 function beep(){
   try{
     const ctx = beep.ctx || (beep.ctx = new (window.AudioContext||window.webkitAudioContext)());
+    if (ctx.state === "suspended") ctx.resume();
     const o = ctx.createOscillator(), g = ctx.createGain();
     o.type="square"; o.frequency.value = 1568; g.gain.value = 0.08;
     o.connect(g); g.connect(ctx.destination);
@@ -206,7 +223,6 @@ function beep(){
   }catch(e){}
 }
 
-/* Light parsing for PN/SN style payloads often found in module QR / Data Matrix */
 function parseFields(text){
   const out = {};
   const pn = text.match(/\bP\/?N[:\s=]+([A-Za-z0-9._\-]+)/i);
@@ -216,12 +232,11 @@ function parseFields(text){
   return out;
 }
 
-/* ---------- render log ---------- */
+/* ---------- log ---------- */
 function render(){
   countEl.textContent = scans.length + (scans.length===1 ? " scan" : " scans");
   emptyEl.style.display = scans.length ? "none" : "block";
   entriesEl.innerHTML = "";
-  // newest first
   scans.slice().reverse().forEach(s => {
     const div = document.createElement("div");
     div.className = "entry";
@@ -237,7 +252,7 @@ function render(){
     note.className="note"; note.placeholder="Note (location, testbed, port…)"; note.value = s.note||"";
     note.addEventListener("change", () => { s.note = note.value; store.save(scans); });
     codes.appendChild(val); codes.appendChild(meta); codes.appendChild(note);
-    const del = document.createElement("button"); del.className="del"; del.textContent="✕";
+    const del = document.createElement("button"); del.className="del"; del.textContent="\u2715";
     del.setAttribute("aria-label","Delete entry");
     del.addEventListener("click", () => {
       scans = scans.filter(x => x.id !== s.id); store.save(scans); render();
@@ -247,11 +262,11 @@ function render(){
   });
 }
 
-/* ---------- record a scan ---------- */
+/* ---------- record ---------- */
 let lastText = "", lastAt = 0;
 function record(text, format){
   const now = Date.now();
-  if (text === lastText && (now - lastAt) < 4000) return;  // debounce repeats
+  if (text === lastText && (now - lastAt) < 4000){ lastAt = now; return; }
   lastText = text; lastAt = now;
   const fields = parseFields(text);
   scans.push({ id: now + "-" + Math.random().toString(36).slice(2,7),
@@ -264,17 +279,78 @@ function record(text, format){
   lastRead.textContent = text; lastRead.classList.add("show");
 }
 
-/* ---------- scanner ---------- */
-let reader = null, running = false, track = null;
-
-function makeReader(){
+/* ---------- ZXing decode core ---------- */
+let zx = null;
+function getReader(){
+  if (zx) return zx;
   const hints = new Map();
   const F = ZXing.BarcodeFormat;
   hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
     F.CODE_128, F.CODE_39, F.QR_CODE, F.DATA_MATRIX, F.EAN_13, F.ITF, F.CODABAR
   ]);
   hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-  return new ZXing.BrowserMultiFormatReader(hints, 200 /* ms between decode attempts */);
+  const r = new ZXing.MultiFormatReader();
+  r.setHints(hints);
+  zx = r;
+  return r;
+}
+
+function fmtName(result){
+  try { return ZXing.BarcodeFormat[result.getBarcodeFormat()]; } catch(e){ return "UNKNOWN"; }
+}
+
+/* Decode a canvas; optionally also try the inverted image (white-on-dark labels). */
+function decodeCanvas(canvas, tryInverted){
+  const reader = getReader();
+  try{
+    const lum = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
+    try{
+      return reader.decodeWithState(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum)));
+    }catch(e1){
+      if (tryInverted && lum.invert){
+        return reader.decodeWithState(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum.invert())));
+      }
+      throw e1;
+    }
+  } finally {
+    try{ reader.reset(); }catch(e){}
+  }
+}
+
+/* ---------- camera + scan loop ---------- */
+let stream = null, track = null, running = false, loopTimer = null, attempts = 0;
+const work = document.createElement("canvas");
+const wctx = work.getContext("2d", { willReadFrequently: true });
+
+function grab(sx, sy, sw, sh, outW){
+  const scale = outW ? Math.min(1, outW / sw) : 1;
+  work.width = Math.round(sw * scale);
+  work.height = Math.round(sh * scale);
+  wctx.drawImage(video, sx, sy, sw, sh, 0, 0, work.width, work.height);
+  return work;
+}
+
+let tick = 0;
+function scanTick(){
+  if (!running || video.readyState < 2) return;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return;
+  attempts++;
+  if (attempts % 5 === 0) statusEl.textContent = "scanning\u2026 " + vw + "\u00d7" + vh + "  passes:" + attempts;
+  tick++;
+  try{
+    let canvas;
+    if (tick % 2 === 1){
+      // center crop matching the reticle (84% w, 40% h) at full native resolution
+      const cw = Math.round(vw*0.84), ch = Math.round(vh*0.40);
+      canvas = grab(Math.round((vw-cw)/2), Math.round((vh-ch)/2), cw, ch, 0);
+    } else {
+      // full frame, downscaled for speed (catches codes outside the reticle)
+      canvas = grab(0, 0, vw, vh, 960);
+    }
+    const result = decodeCanvas(canvas, tick % 4 === 0);
+    if (result) record(result.getText(), fmtName(result));
+  }catch(e){ /* NotFoundException — nothing in frame this pass */ }
 }
 
 async function start(){
@@ -284,32 +360,33 @@ async function start(){
     return;
   }
   try{
-    reader = reader || makeReader();
-    running = true;
-    btnStart.textContent = "Stop"; btnStart.classList.add("stop");
-    viewport.classList.remove("idle"); viewport.classList.add("live");
-
-    const constraints = {
+    stream = await navigator.mediaDevices.getUserMedia({
       audio:false,
       video:{ facingMode:{ ideal:"environment" },
               width:{ ideal:1920 }, height:{ ideal:1080 } }
-    };
-    await reader.decodeFromConstraints(constraints, video, (result, err) => {
-      if (result) record(result.getText(), result.getBarcodeFormat ? ZXing.BarcodeFormat[result.getBarcodeFormat()] : "UNKNOWN");
-      // err fires constantly when nothing is in frame — ignore NotFoundException
     });
+    video.srcObject = stream;
+    await video.play();
+    running = true; attempts = 0;
+    btnStart.textContent = "Stop"; btnStart.classList.add("stop");
+    viewport.classList.remove("idle"); viewport.classList.add("live");
+    statusEl.classList.add("show");
+    loopTimer = setInterval(scanTick, 180);
 
-    // torch support detection
-    const stream = video.srcObject;
-    track = stream && stream.getVideoTracks()[0];
-    const caps = track && track.getCapabilities ? track.getCapabilities() : {};
-    if (caps && caps.torch) btnTorch.classList.remove("hidden");
+    track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.torch) btnTorch.classList.remove("hidden");
+    if (caps.zoom){
+      zoomSlider.min = caps.zoom.min || 1;
+      zoomSlider.max = Math.min(caps.zoom.max || 3, 5);
+      zoomSlider.step = caps.zoom.step || 0.1;
+      zoomSlider.value = track.getSettings().zoom || zoomSlider.min;
+      zoomRow.classList.add("show");
+    }
   }catch(e){
-    running = false;
-    btnStart.textContent = "Start camera"; btnStart.classList.remove("stop");
-    viewport.classList.add("idle"); viewport.classList.remove("live");
+    stop();
     if (e && (e.name === "NotAllowedError" || e.name === "SecurityError")){
-      showErr("Camera access denied. iOS requires HTTPS and camera permission (Settings → Safari → Camera, or the aA menu → Website Settings).");
+      showErr("Camera access denied. iOS requires HTTPS and camera permission (Settings \u2192 Safari \u2192 Camera, or the aA menu \u2192 Website Settings).");
     } else if (e && e.name === "NotFoundError"){
       showErr("No camera found.");
     } else {
@@ -320,15 +397,23 @@ async function start(){
 
 function stop(){
   running = false;
-  if (reader) reader.reset();
-  track = null;
+  clearInterval(loopTimer); loopTimer = null;
+  if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+  video.srcObject = null; track = null;
   btnStart.textContent = "Start camera"; btnStart.classList.remove("stop");
   btnTorch.classList.add("hidden"); btnTorch.setAttribute("aria-pressed","false");
+  zoomRow.classList.remove("show");
+  statusEl.classList.remove("show");
   viewport.classList.add("idle"); viewport.classList.remove("live");
   lastRead.classList.remove("show");
 }
 
 btnStart.addEventListener("click", () => running ? stop() : start());
+
+zoomSlider.addEventListener("input", () => {
+  if (!track) return;
+  track.applyConstraints({ advanced:[{ zoom: Number(zoomSlider.value) }] }).catch(()=>{});
+});
 
 btnTorch.addEventListener("click", async () => {
   if (!track) return;
@@ -337,6 +422,44 @@ btnTorch.addEventListener("click", async () => {
     await track.applyConstraints({ advanced:[{ torch:on }] });
     btnTorch.setAttribute("aria-pressed", String(on));
   }catch(e){ toast("Torch not available"); }
+});
+
+/* ---------- photo fallback (native camera autofocus) ---------- */
+btnPhoto.addEventListener("click", () => fileInput.click());
+
+fileInput.addEventListener("change", async () => {
+  const file = fileInput.files && fileInput.files[0];
+  fileInput.value = "";
+  if (!file) return;
+  if (typeof ZXing === "undefined"){ showErr("Scanner library not loaded."); return; }
+  toast("Decoding photo\u2026");
+  try{
+    const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+    const sizes = [1600, 1100, 700, 2200];
+    let result = null;
+    for (const targetW of sizes){
+      const scale = Math.min(1, targetW / bmp.width);
+      work.width = Math.round(bmp.width * scale);
+      work.height = Math.round(bmp.height * scale);
+      wctx.drawImage(bmp, 0, 0, work.width, work.height);
+      try{ result = decodeCanvas(work, true); break; }catch(e){}
+      // also try the center 60% region at this size
+      const cw = Math.round(work.width*0.6), ch = Math.round(work.height*0.6);
+      const crop = document.createElement("canvas");
+      crop.width = cw; crop.height = ch;
+      crop.getContext("2d").drawImage(work, (work.width-cw)/2, (work.height-ch)/2, cw, ch, 0, 0, cw, ch);
+      try{ result = decodeCanvas(crop, true); break; }catch(e){}
+    }
+    bmp.close && bmp.close();
+    if (result){
+      record(result.getText(), fmtName(result));
+      toast("Decoded");
+    } else {
+      toast("No code found in photo \u2014 try closer / better light");
+    }
+  }catch(e){
+    toast("Could not read photo");
+  }
 });
 
 /* ---------- export ---------- */
@@ -353,7 +476,7 @@ $("btnExport").addEventListener("click", async () => {
   const blob = new Blob([csv()], { type:"text/csv" });
   const file = new File([blob], name, { type:"text/csv" });
   if (navigator.canShare && navigator.canShare({ files:[file] })){
-    try { await navigator.share({ files:[file], title:name }); return; } catch(e){ /* user cancelled */ }
+    try { await navigator.share({ files:[file], title:name }); return; } catch(e){}
   }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob); a.download = name;
@@ -374,7 +497,6 @@ $("btnClear").addEventListener("click", () => {
   }
 });
 
-/* ---------- service worker ---------- */
 if ("serviceWorker" in navigator){
   window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(()=>{}));
 }
